@@ -7,10 +7,11 @@ Uses Picamera2 hardware JPEG encoding for maximum FPS
 import time
 import io
 import logging
+import os
 import redis
 from picamera2 import Picamera2
 from libcamera import Transform
-
+from picamera2.encoders import JpegEncoder
 #############################################################
 # CONFIGURATION OPTIONS                                     #
 #############################################################
@@ -21,15 +22,20 @@ from libcamera import Transform
 #############################################################
 # Redis Stream settings
 MAX_STREAM_LEN = 1  # Trim to last N entries
-APPROX_TRIM = False # Use approximate trimming for speed
-STREAM_NAME = "camera_stream:raspberrypi"
+APPROX_TRIM = True # trimming for speed
+STREAM_NAME = f"camera_stream:{os.environ.get('CAMERA_ID','raspberrypi')}"
 # Redis network settings
-REDIS_HOST = "redis"
-REDIS_PORT = 6379
+REDIS_HOST = os.environ.get("REDIS_HOST", "redis")
+REDIS_PORT = int(os.environ.get("REDIS_PORT", 6379))
 # Raspberrypi Camera settings
-WIDTH = 1920
-HEIGHT = 1080
-JPEG_QUALITY = 85
+WIDTH = int(os.environ.get('WIDTH', 4056))
+HEIGHT = int(os.environ.get('HEIGHT', 3040))
+L_WIDTH = int(os.environ.get('L_WIDTH', 1024))
+L_HEIGHT = int(os.environ.get('L_HEIGHT', 768))
+ROT = int(os.environ.get('ROT', 90))
+FPS = int(os.environ.get('FPS', 30))
+
+JPEG_QUALITY = os.environ.get('JPEG_QUALITY', 85)
 ############################################################
 logging.basicConfig(
     level=logging.INFO,
@@ -60,15 +66,34 @@ class RedisCameraProducer:
         # Initialize camera
         self.picam2 = Picamera2()
         
+
         # Video config, sensor is mounted upside down to housing
         config = self.picam2.create_video_configuration(
-            main={"size": (WIDTH, HEIGHT), "format": "YUV420"},
-            transform=Transform(hflip=True, vflip=True)
+            main={'size': (WIDTH, HEIGHT), 'format': 'YUV420'},
+            lores={'size': (L_WIDTH, L_HEIGHT), 'format': 'YUV420'},
+            transform=Transform(rotation=ROT),
+            controls={'FrameRate': FPS} # This sets the hardware clock
         )
         
         self.picam2.configure(config)
-        logging.info(f"Camera configured: {WIDTH}x{HEIGHT}, flipped 180")
-        
+        # Create a formatted initialization summary
+        init_msg = (
+            f"\n{'='*50}\n"
+            f" CAMERA PRODUCER INITIALIZED\n"
+            f"{'-'*50}\n"
+            f" Redis Stream:  {STREAM_NAME}\n"
+            f" Redis Host:    {REDIS_HOST}:{REDIS_PORT}\n"
+            f" Stream Limit:  {MAX_STREAM_LEN} (Approx: {APPROX_TRIM})\n"
+            f"{'-'*50}\n"
+            f" Main Sensor:   {WIDTH}x{HEIGHT} @ {FPS} FPS\n"
+            f" Lores Stream:  {L_WIDTH}x{L_HEIGHT}\n"
+            f" Rotation:      {ROT}°\n"
+            f" JPEG Quality:  {JPEG_QUALITY}\n"
+            f"{'='*50}"
+        )
+
+        logging.info(init_msg)
+
         # Performance tracking
         self.frame_count = 0
         self.last_log = time.time()
@@ -90,25 +115,33 @@ class RedisCameraProducer:
     def _streaming_loop(self):
         """Main capture and publish loop"""
         while self.running:
+            encoder = JpegEncoder(q=85)
+            l_stream = self.picam2.streams[1]
             try:
-                buf = io.BytesIO()
                 try:
-                    self.picam2.capture_file(buf, format='jpeg', quality=JPEG_QUALITY)
-                except TypeError:
-                    self.picam2.capture_file(buf, format='jpeg')
-                
-                frame_bytes = buf.getvalue()
-                
-                # Push to Redis Stream
-                self.redis_client.xadd(
-                    STREAM_NAME,
-                    {"image": frame_bytes},
-                    maxlen=MAX_STREAM_LEN,
-                    approximate=APPROX_TRIM
-                )
-                
-                self.frame_count += 1
-                self._log_performance(frame_bytes)
+                    request = self.picam2.capture_request()
+                    preview_data = encoder.encode_func(request, "lores")
+
+                    if preview_data:
+                        # Push to Redis Stream
+                        self.redis_client.xadd(
+                            STREAM_NAME,
+                            {"image": preview_data},
+                            maxlen=MAX_STREAM_LEN,
+                            approximate=APPROX_TRIM
+                        )
+                        self.frame_count += 1
+                        self._log_performance(preview_data)
+                    analysis_data = request.make_buffer("main")
+                    # Can potentially send this for latency
+                    # y_channel = analysis_data.ravel()[:4056 * 3040].tobytes()
+                    self.redis_client.set("camera_stream:analysis_latest", analysis_data.tobytes())
+
+                    request.release()
+                except Exception as exp:
+                    print(f"It failed: {exp}")
+
+
                 
             except redis.RedisError as e:
                 logging.error(f"Redis error: {e}")
