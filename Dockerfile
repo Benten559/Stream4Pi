@@ -30,6 +30,10 @@ ENV CAMERA_ID=raspberrypi
 ENV WIDTH=1920
 ENV HEIGHT=1080
 ENV JPEG_QUALITY=85
+ENV L_WIDTH=1028
+ENV L_HEIGHT=720
+ENV FPS=30
+ENV ROT=90
 
 # Health check - verify Redis connection
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
