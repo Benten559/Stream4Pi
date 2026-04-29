@@ -1,2 +1,6 @@
-pi_cam_env
-output/*
+pi_cam_env/
+output/
+__pycache__/
+*.pyc
+*.pyo
+.env
