@@ -135,7 +135,17 @@ class RedisCameraProducer:
                     analysis_data = request.make_buffer("main")
                     # Can potentially send this for latency
                     # y_channel = analysis_data.ravel()[:4056 * 3040].tobytes()
-                    self.redis_client.set("camera_stream:analysis_latest", analysis_data.tobytes())
+                    # In your streaming_loop
+                    hires_key = f"camera_hires:{os.environ.get('CAMERA_ID', 'raspberrypi')}"
+                    current_ts = time.time_ns()
+
+                    self.redis_client.hset(
+                        hires_key,
+                        mapping={
+                            "image": analysis_data.tobytes(),
+                            "timestamp": str(current_ts)
+                        }
+                    )
 
                     request.release()
                 except Exception as exp:
