@@ -1,69 +1,52 @@
-# Pi4CameraStream
-This repo contains source for streaming using PiCamera and (TODO) other camera interfaces.
-<br><br>
-TODOs include:
-* Support for different cameras
-* Networking support for server/cloud processing of imagery
+# Stream4Pi
 
-### Build
-```
-./build.sh
-```
+Raspberry Pi camera streaming system using [picamera2](https://github.com/raspberrypi/picamera2) and Redis Streams.
 
-### Dependencies (Linux)
-Its using C++20 (cause why not, some of this may be overkill)
-```
-sudo apt update
-sudo apt install build-essential g++ cmake git pkg-config libjpeg-dev libtiff5-dev libjasper-dev libpng-dev libavcodec-dev libavformat-dev libswscale-dev libv4l-dev libxvidcore-dev libx264-dev libgtk2.0-dev libatlas-base-dev gfortran python3-dev
+The Pi captures frames at full sensor resolution (up to 12MP), publishes a low-res JPEG preview stream for live viewing, and writes a high-res YUV frame to a Redis hash for downstream processing.
+
+## Architecture
 
 ```
-***Build and Install openCV from source***
-```
-cd <YOUR_DIR>
-git clone https://github.com/opencv/opencv.git
-git clone https://github.com/opencv/opencv_contrib.git
-cd opencv
-mkdir build
-cd build
-```
-* Toggle as you please here:
-```
-cmake -D CMAKE_BUILD_TYPE=RELEASE \
-      -D CMAKE_INSTALL_PREFIX=/usr/local \
-      -D OPENCV_EXTRA_MODULES_PATH=~/opencv_contrib/modules \
-      -D ENABLE_NEON=ON \
-      -D ENABLE_VFPV3=ON \
-      -D BUILD_TESTS=OFF \
-      -D INSTALL_PYTHON_EXAMPLES=OFF \
-      -D BUILD_EXAMPLES=OFF ..
-```
-* Raspberry Pi 4 has 4 of em
-```
-make -j4
-sudo make install
+Raspberry Pi
+└── camera_streamer.py (producer)
+      ├── camera_stream:<CAMERA_ID>  →  Redis Stream  (lores JPEG, for viewing)
+      └── camera_hires:<CAMERA_ID>   →  Redis Hash    (full-res YUV, for processing)
+
+Processor host
+└── Processor_send.py
+      ├── reads  camera_hires:<CAMERA_ID>
+      └── writes camera_stream:processed  →  Redis Stream (processed JPEG)
 ```
 
-***Build and Install raspicam from source:***
-```cd <YOUR_DIR>
-git clone https://github.com/cedricve/raspicam
-cd raspicam
-mkdir build
-cd build
-cmake ..
-make
-sudo make install
-```
-* Dont forget to update links
-```
-sudo ldconfig
+## Running with Docker
+
+```bash
+docker build -t stream4pi .
+docker run --privileged \
+  -e REDIS_HOST=<host> \
+  -e CAMERA_ID=raspberrypi \
+  stream4pi
 ```
 
-***Troubleshoot linkage***
-* links not being found
-```
-echo "/usr/local/lib" | sudo tee /etc/ld.so.conf.d/raspicam.conf
-```
-* helpful line (just in case)
-```
-export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
-``` 
+### Environment variables
+
+| Variable       | Default        | Description                        |
+|----------------|----------------|------------------------------------|
+| `REDIS_HOST`   | `redis`        | Redis server hostname              |
+| `REDIS_PORT`   | `6379`         | Redis server port                  |
+| `CAMERA_ID`    | `raspberrypi`  | Key suffix for Redis entries       |
+| `WIDTH`        | `1920`         | Main stream width (px)             |
+| `HEIGHT`       | `1080`         | Main stream height (px)            |
+| `L_WIDTH`      | `1028`         | Lores preview width (px)           |
+| `L_HEIGHT`     | `720`          | Lores preview height (px)          |
+| `FPS`          | `30`           | Target frame rate                  |
+| `JPEG_QUALITY` | `85`           | JPEG quality for preview stream    |
+| `ROT`          | `90`           | Sensor rotation (degrees)          |
+
+## Utilities
+
+- `stream_monitor.py` — connects to Redis and prints live FPS / frame size stats for both streams
+
+## Legacy
+
+The original C++ implementation (OpenCV + raspicam) lives in `cpp/`.
